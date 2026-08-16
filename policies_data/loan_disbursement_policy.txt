@@ -1,0 +1,13 @@
+# FINSECURE LOAN DISBURSEMENT POLICY (POL-LON-005)
+
+1. PRE-DISBURSEMENT CHECKLIST:
+- Loan application must be in status 'APPROVED'.
+- Customer identity and credit assessment must be fully verified.
+- Disbursement amount must match the sanctioned loan amount exactly.
+- Account status of beneficiary must be 'ACTIVE'.
+
+2. DISBURSEMENT EXECUTION:
+- Credit customer account with sanctioned amount.
+- Update loan disbursement status to 'DISBURSED' with timestamp.
+- Record disbursement transaction with reference code 'LN-DISB'.
+- Disbursement is ONE-TIME and IDEMPOTENT. Repeated disbursement attempts on an already disbursed loan must be rejected.

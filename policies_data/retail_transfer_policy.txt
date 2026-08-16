@@ -1,0 +1,16 @@
+# FINSECURE RETAIL WIRE TRANSFER POLICY (POL-RET-001)
+
+1. DAILY TRANSFER LIMITS:
+- Standard Retail Accounts: Maximum transfer limit per calendar day is ₹2,00,000.
+- Single Transaction Limit: Single online wire transfer / IMPS / NEFT limit is ₹1,00,000 without additional 2FA / Manager approval.
+- High-Value Transfers (₹80,000 - ₹2,00,000): Allowed automatically if account balance is sufficient and account status is ACTIVE.
+
+2. VERIFICATION REQUIREMENTS:
+- Sender account must be in ACTIVE status.
+- Sender must have sufficient clear balance.
+- Beneficiary (receiver) account must be verified and ACTIVE.
+- Transactions above ₹50,000 must generate an automated audit log entry.
+
+3. RESTRICTIONS:
+- Transfers from FROZEN or SUSPENDED accounts are strictly prohibited.
+- Transfers exceeding daily limits will be queued for manual review.

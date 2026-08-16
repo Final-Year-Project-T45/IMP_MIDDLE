@@ -1,0 +1,16 @@
+# FINSECURE ACCOUNT FREEZE & EMERGENCY LOCK POLICY (POL-SEC-004)
+
+1. IMMEDIATE FREEZE CONDITIONS:
+- Customer report of lost, stolen, or compromised credentials/cards.
+- Detected suspicious burst of failed logins or unauthorized transaction attempts.
+- Formal request from Fraud Investigation Unit or Law Enforcement.
+
+2. OPERATIONAL PROCEDURE:
+- Account status must immediately transition to 'FROZEN'.
+- All outbound transfer requests, debit operations, and card authorizations must be blocked.
+- An immediate Audit Event must be logged with the agent/analyst ID and reason.
+- Account holder must be notified via SMS/Email within 15 minutes.
+
+3. UNFREEZE PROTOCOL:
+- Customer must present multi-factor identity verification in branch or via secure video KYC.
+- Fraud Analyst sign-off required prior to transitioning account status back to 'ACTIVE'.

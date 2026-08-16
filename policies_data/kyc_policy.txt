@@ -1,0 +1,10 @@
+# FINSECURE CUSTOMER KYC & RISK CLASSIFICATION POLICY (POL-KYC-003)
+
+1. KYC TIER REQUIREMENTS:
+- Tier 1: Verified (Full Aadhaar/PAN validation).
+- Tier 2: Enhanced Due Diligence (EDD) for high-net-worth or corporate accounts.
+
+2. RISK RATING:
+- LOW: Standard retail customer with clean transaction history.
+- MEDIUM: Accounts with occasional high volume.
+- HIGH: Accounts under active fraud monitoring or with recent security alerts.

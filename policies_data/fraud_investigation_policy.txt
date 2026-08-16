@@ -1,0 +1,9 @@
+# FINSECURE FRAUD INVESTIGATION POLICY (POL-FRD-006)
+
+1. FRAUD CASE HANDLING:
+- Fraud cases (e.g. FC-2291) track suspect activity, compromised credentials, or high-risk transfers.
+- Analysts and agents can query case status, severity level (LOW, MEDIUM, HIGH, CRITICAL), and linked transactions.
+- Status workflow: OPEN -> UNDER_INVESTIGATION -> ACTION_TAKEN / RESOLVED.
+
+2. EVIDENCE RETRIEVAL:
+- Agents must retrieve associated customer profile, transaction history (last 5-10 transactions), and account freeze records when reviewing a fraud case.

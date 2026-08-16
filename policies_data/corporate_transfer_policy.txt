@@ -1,0 +1,8 @@
+# FINSECURE CORPORATE WIRE TRANSFER POLICY (POL-CORP-002)
+
+1. DAILY TRANSFER LIMITS:
+- Corporate Accounts: Maximum transfer limit per calendar day is ₹50,00,000.
+- Dual Authorization required for single transactions exceeding ₹10,00,000.
+
+2. COMPLIANCE & AUDIT:
+- All corporate transfers must record tax identification and corporate clearance flags.
