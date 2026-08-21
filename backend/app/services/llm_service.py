@@ -176,7 +176,7 @@ class LLMService:
 
     MAX_RATE_LIMIT_RETRIES = 2
     BASE_RETRY_WAIT = 3.0
-    FALLBACK_MODEL = "llama-3.1-8b-instant"
+    FALLBACK_MODEL = "openai/gpt-oss-20b"
 
     def __init__(self):
         self.api_key = settings.GROQ_API_KEY

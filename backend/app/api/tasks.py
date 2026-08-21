@@ -96,8 +96,14 @@ def create_and_execute_task(payload: TaskCreateRequest, db: Session = Depends(ge
     task_status = final_state.get("status", "COMPLETED")
     exec_out = final_state.get("execution_output", {})
     audit = final_state.get("audit_result", {})
-    is_failed = task_status == "FAILED" or exec_out.get("status") == "FAILED" or audit.get("audit_status") == "FAILED"
-    overall_status = "FAILED" if is_failed else "SUCCESS"
+    is_failed = task_status == "FAILED" or exec_out.get("status") in {"FAILED", "ERROR"} or audit.get("audit_status") == "FAILED"
+    is_inconclusive = task_status == "INCONCLUSIVE" or audit.get("audit_status") == "INCONCLUSIVE"
+    if is_failed:
+        overall_status = "FAILED"
+    elif is_inconclusive:
+        overall_status = "INCONCLUSIVE"
+    else:
+        overall_status = "SUCCESS"
 
     resp = {
         "status": overall_status,
@@ -115,7 +121,7 @@ def create_and_execute_task(payload: TaskCreateRequest, db: Session = Depends(ge
         "llm_telemetry": final_state.get("llm_telemetry", {})
     }
 
-    if is_failed:
+    if is_failed or is_inconclusive:
         resp["failure_stage"] = final_state.get("failure_stage") or ("Executor" if exec_out.get("status") == "FAILED" else ("Auditor" if audit.get("audit_status") == "FAILED" else "Researcher"))
         resp["error_type"] = exec_out.get("error_type") or exec_out.get("error") or audit.get("audit_status") or "EXECUTION_FAILED"
         resp["message"] = exec_out.get("error") or exec_out.get("message") or audit.get("summary") or "Task execution failed"

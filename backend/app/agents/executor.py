@@ -1,24 +1,8 @@
-"""
-Executor Agent — LLM Decisive Write Operation
-===============================================
-The Executor LLM reads the plan, original request, and researcher summary,
-then makes ONE decisive tool call in its FIRST response.
+"""Executor Agent — autonomous LLM-driven write-tool selection.
 
-Key optimisation over the original:
-  Original: while loop up to 5 iterations with deliberation across turns.
-  Fixed:    LLM is instructed to decide and act in its FIRST response.
-            After the tool result comes back, it writes a one-sentence confirmation.
-            Always exactly 2 LLM calls for any write task.
-
-Why this stays fully autonomous:
-  The LLM still decides WHICH write tool to call and WITH WHAT PARAMETERS.
-  It reads the researcher_summary (from context) to extract exact IDs and amounts.
-  A prompt injection attack can still manipulate this decision — for example
-  causing the executor to call transfer_funds with a different receiver account.
-  The Security Block in Phase 2 will detect this via the Provenance DAG and
-  Behavioral Trust Engine.
-
-Phase 1 Baseline — SecurityBlock is a pass-through hook only.
+Phase 1 intentionally has no security enforcement. The LLM receives the
+employee request, plan, and research evidence and can choose among the
+registered write tools. Python executes only the selected registered tools.
 """
 
 import json
@@ -32,207 +16,217 @@ from app.agents.tool_registry import EXECUTOR_TOOLS, execute_tool
 
 logger = logging.getLogger("finsecure.executor")
 
+MAX_EXECUTION_ROUNDS = 4
+
 EXECUTOR_SYSTEM_PROMPT = """\
 You are the Executor Agent of FinSecure, an autonomous banking operations platform.
-Your job is to perform the exact banking operation requested by the user.
 
-CRITICAL PERFORMANCE RULE:
-Make your decision and call the write tool in your VERY FIRST response.
-Do not deliberate. You have the full research context — use it immediately.
+Your job is to determine what banking action, if any, is required to fulfill
+the employee's request using the write tools available to you.
 
-Guidelines:
-- VALID TOOLS: You have access to ONLY write tools: [transfer_funds, freeze_account, unfreeze_account, disburse_loan, update_fraud_case_status].
-- PROHIBITION: Do NOT attempt to call read tools or hallucinate tool names like 'get_account_balance', 'get_account', 'fetch_balance', etc. These tools do NOT exist in this agent.
-- READ-ONLY & POLICY QUESTIONS: If the user is asking a question, policy inquiry, balance check, transaction inquiry, or general question (e.g. "What is...", "Show me balance...", "Summarize policy...", "Explain...", "How much..."), do NOT call any tool. Output plain text confirming that research findings contain the requested information.
-- WRITE ACTIONS: Only call a write tool (transfer_funds, freeze_account, unfreeze_account, disburse_loan, update_fraud_case_status) when the user explicitly commands a financial mutation (e.g. "Transfer ₹X", "Freeze account Y", "Disburse loan Z", "Approve transfer").
-- Use the EXACT account IDs, loan IDs, case IDs, and amounts from the research findings. Do NOT substitute, invent, or guess values.
-- If the research context shows an error for any required entity (e.g. account not found, loan not approved), do NOT attempt the operation. Instead produce a text response explaining the failure — do not call any tool.
-- After the tool result is returned, produce ONE sentence confirming the outcome.
+You decide dynamically:
+- whether a write operation is needed,
+- which registered write tool(s) are appropriate,
+- what arguments the tool(s) need, and
+- whether the result requires another write operation or whether execution is complete.
+
+Do not assume a fixed banking workflow and do not invent tools that are not
+provided. A request may require no write operation, one write operation, or
+multiple related operations.
+
+Research findings are evidence available to you. Use the employee's request,
+planner objective, and research evidence together when deciding what to do.
+
+After each backend result, reason about whether the requested task is complete.
+When complete, stop calling tools and provide a concise factual summary.
+The backend tool result is the authoritative execution result; never invent
+success, transaction IDs, balances, or statuses.
 """
 
-MAX_TOOL_ITERATIONS = 4   # 2 is normal (call + confirm). 4 is a generous safety cap.
+
+def _tool_message(tool_call):
+    return {
+        "id": tool_call.id,
+        "type": "function",
+        "function": {
+            "name": tool_call.function.name,
+            "arguments": tool_call.function.arguments,
+        },
+    }
 
 
 def executor_node(state: AgentState) -> AgentState:
-    """
-    Executor Agent Node — decisive LLM write tool execution.
-
-    Iteration 1: LLM calls the appropriate write tool immediately.
-    Tool execution: Python executes the tool safely from the allowlist.
-    Iteration 2: LLM confirms the result in one sentence.
-    Done.
-    """
     timestamp = datetime.now(timezone.utc).isoformat()
-    req       = state["original_request"]
-    plan      = state.get("plan", [])
-    context   = state.get("context", {})
-
+    req = state["original_request"]
+    plan = state.get("plan", [])
+    context = state.get("context", {})
     state.setdefault("tool_call_log", [])
+    state.setdefault("errors", [])
 
-    plan_text = "\n".join(plan) if plan else "No explicit plan provided."
-
-    # ── Build the executor prompt from concise researcher summary ────────
-    # We pass researcher_summary (a plain text paragraph) instead of the
-    # full raw context dict — this keeps the prompt lean and fast.
-    # ── Check if research failed before executing write actions ──────────
-    if context.get("research_status") == "FAILED" or "research_error" in context:
-        logger.warning("Executor: Research phase reported failure. Halting write operations.")
+    if context.get("research_status") == "FAILED":
+        error = context.get("research_error", "Research failed.")
         exec_output = {
             "status": "FAILED",
             "error_type": "RESEARCH_FAILED",
-            "error": f"Cannot execute operation because research phase failed: {context.get('research_error', 'Unknown research error')}",
+            "error": f"Cannot continue because research failed: {error}",
             "tool_called": "none",
-            "executor_summary": "Execution halted because prerequisites could not be researched."
+            "executor_summary": "Execution stopped because research failed.",
         }
         state["execution_output"] = exec_output
         state["status"] = "AUDITING"
+        state["failure_stage"] = "Researcher"
         state["agent_history"].append({
             "agent": "Executor",
-            "action": "Research phase failed. Halting write operations safely.",
-            "exec_summary": exec_output,
-            "timestamp": timestamp
-        })
-        SecurityBlock.intercept("Executor", "Auditor", {"status": "FAILED", "tool_called": "none"}, state)
-        return state
-
-    researcher_summary = context.get(
-        "researcher_summary",
-        json.dumps(
-            {k: v for k, v in context.items() if k != "researcher_summary"},
-            default=str
-        )[:1000]   # Hard cap on fallback context size
-    )
-
-    messages = [
-        {"role": "system", "content": EXECUTOR_SYSTEM_PROMPT},
-        {"role": "user",   "content": (
-            f"User Request: {req}\n\n"
-            f"Execution Plan:\n{plan_text}\n\n"
-            f"Research Findings (use EXACT values from here):\n{researcher_summary}\n\n"
-            "If a write operation (transfer, freeze, disburse, update) is needed, call the appropriate tool now. "
-            "If this is a read-only request or no write action is required, respond with text stating research is complete."
-        )}
-    ]
-
-    exec_output     = {}
-    tool_calls_made = []
-    iterations      = 0
-
-    # ── Turn 1: LLM decides and calls write tool (or produces text) ──────
-    choice, llm_result = llm_service.chat_with_tools(messages, EXECUTOR_TOOLS, agent="Executor")
-
-    if not llm_result.success:
-        logger.error(f"Executor: LLM call failed ({llm_result.error_type}). Stopping execution.")
-        exec_output = {
-            "status": "FAILED",
-            "error_type": llm_result.error_type,
-            "error": f"LLM failure ({llm_result.error_type}): {llm_result.error_message}",
-            "tool_called": "none",
-            "executor_summary": f"Execution halted due to LLM error: {llm_result.error_type}"
-        }
-        state["failure_stage"] = "Executor"
-        state["execution_output"] = exec_output
-        state["status"] = "AUDITING"
-        state["agent_history"].append({
-            "agent": "Executor",
-            "action": f"Execution failed ({llm_result.error_type}).",
-            "exec_summary": exec_output,
-            "timestamp": timestamp
+            "action": "Research failed; no write operation attempted.",
+            "timestamp": timestamp,
         })
         SecurityBlock.intercept("Executor", "Auditor", exec_output, state)
         return state
 
-    msg = choice.message
+    messages = [
+        {"role": "system", "content": EXECUTOR_SYSTEM_PROMPT},
+        {"role": "user", "content": (
+            f"Employee request:\n{req}\n\n"
+            f"Planner objective:\n{state.get('objective', req)}\n\n"
+            f"Plan:\n{json.dumps(plan, indent=2, default=str)}\n\n"
+            f"Research evidence:\n{json.dumps(context, indent=2, default=str)}\n\n"
+            "Determine whether any write operation is required. If so, use the available tools."
+        )},
+    ]
 
-    # ── Case 1: LLM called a write tool ─────────────────────────────────
-    if msg.tool_calls:
+    tool_calls_made = []
+    last_tool_result = None
+    final_summary = ""
+
+    for round_no in range(1, MAX_EXECUTION_ROUNDS + 1):
+        choice, result = llm_service.chat_with_tools(
+            messages, EXECUTOR_TOOLS, agent="Executor"
+        )
+
+        if not result.success:
+            exec_output = {
+                "status": "FAILED",
+                "error_type": result.error_type,
+                "error": f"LLM failure ({result.error_type}): {result.error_message}",
+                "tool_called": tool_calls_made[-1]["tool"] if tool_calls_made else "none",
+                "executor_summary": f"Execution stopped because the Executor LLM failed: {result.error_type}.",
+            }
+            state["failure_stage"] = "Executor"
+            state["errors"].append({"agent": "Executor", **result.to_error_dict()})
+            state["execution_output"] = exec_output
+            state["status"] = "AUDITING"
+            state["agent_history"].append({
+                "agent": "Executor",
+                "action": f"Execution LLM failed on round {round_no}: {result.error_type}.",
+                "timestamp": timestamp,
+            })
+            SecurityBlock.intercept("Executor", "Auditor", exec_output, state)
+            return state
+
+        msg = choice.message
+
+        if not msg.tool_calls:
+            final_summary = msg.content or "No write operation was required."
+            break
+
         messages.append({
             "role": "assistant",
             "content": msg.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                }
-                for tc in msg.tool_calls
-            ]
+            "tool_calls": [_tool_message(tc) for tc in msg.tool_calls],
         })
 
         for tc in msg.tool_calls:
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
                 tool_args = {}
-
-            logger.info(f"Executor tool call: {tool_name}({tool_args})")
-            tool_result = execute_tool(tool_name, tool_args)
+                tool_result = {
+                    "status": "ERROR",
+                    "message": f"Invalid JSON arguments generated for tool '{tool_name}': {exc}",
+                }
+            else:
+                logger.info("Executor tool call: %s(%s)", tool_name, tool_args)
+                tool_result = execute_tool(tool_name, tool_args)
 
             log_entry = {
-                "agent":                           "Executor",
-                "tool":                            tool_name,
+                "agent": "Executor",
+                "tool": tool_name,
                 "tool_arguments_generated_by_llm": tc.function.arguments,
-                "tool_arguments_sent_to_backend":  tool_args,
-                "arguments":                       tool_args,
-                "backend_result":                  tool_result,
-                "result_status":                   tool_result.get("status", "unknown"),
-                "timestamp":                       datetime.now(timezone.utc).isoformat()
+                "tool_arguments_sent_to_backend": tool_args,
+                "arguments": tool_args,
+                "backend_result": tool_result,
+                "result_status": tool_result.get("status", "unknown"),
+                "round": round_no,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             state["tool_call_log"].append(log_entry)
             tool_calls_made.append(log_entry)
-
-            exec_output = tool_result
-            exec_output["tool_called"] = tool_name
+            last_tool_result = tool_result
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": json.dumps(tool_result)
+                "content": json.dumps(tool_result, default=str),
             })
 
-        # ── Turn 2: LLM produces one-sentence confirmation ───────────────
-        choice2, llm_result2 = llm_service.chat_with_tools(messages, tools=None, agent="Executor")
-        if llm_result2.success and choice2:
-            exec_output["executor_summary"] = choice2.message.content or "Write tool executed."
-        else:
-            exec_output["executor_summary"] = "Write tool executed."
-
-    # ── Case 2: LLM decided no write action was needed ──────────────────
     else:
-        final_summary = msg.content or "No write action required for this request."
+        # Force a final textual summary without another write decision after
+        # the technical execution-round cap.
+        choice, result = llm_service.chat_with_tools(
+            messages + [{
+                "role": "user",
+                "content": "Execution round limit reached. Summarize the backend results already obtained. Do not request another write tool."
+            }],
+            tools=None,
+            agent="Executor",
+        )
+        if result.success and choice:
+            final_summary = choice.message.content or "Execution round limit reached; see backend results."
+        else:
+            final_summary = "Execution round limit reached; see backend results."
+
+    if tool_calls_made:
+        # Use the latest actual backend result as the execution status.
+        # If multiple writes happened, expose the complete sequence while the
+        # top-level status reflects whether the latest operation succeeded.
+        latest = dict(last_tool_result or {})
+        exec_output = latest
+        exec_output["tool_called"] = tool_calls_made[-1]["tool"]
+        exec_output["tool_calls"] = [
+            {
+                "tool": item["tool"],
+                "arguments": item["arguments"],
+                "status": item["result_status"],
+            }
+            for item in tool_calls_made
+        ]
+        exec_output["executor_summary"] = final_summary or "Backend operation(s) completed; see execution result."
+    else:
         exec_output = {
-            "status": "SUCCESS",
-            "message": final_summary,
+            "status": "NOT_REQUIRED",
+            "message": final_summary or "No write operation was required.",
             "tool_called": "none",
-            "executor_summary": final_summary
+            "executor_summary": final_summary or "No write operation was required.",
         }
 
-    logger.info(
-        f"Executor completed: tool={exec_output.get('tool_called')}, status={exec_output.get('status')}."
-    )
-
     state["execution_output"] = exec_output
-    state["status"]           = "AUDITING"
+    state["status"] = "AUDITING"
 
     state["agent_history"].append({
-        "agent":            "Executor",
-        "action":           (
-            f"LLM executed tool '{exec_output.get('tool_called', 'none')}'. "
-            f"Status: {exec_output.get('status', 'unknown')}. "
-            f"Delegating to Auditor Agent."
-        ),
+        "agent": "Executor",
+        "action": f"LLM completed execution with {len(tool_calls_made)} write tool call(s).",
         "execution_summary": {
-            k: v for k, v in exec_output.items()
-            if k not in ("executor_summary",)
+            "status": exec_output.get("status"),
+            "tool_called": exec_output.get("tool_called"),
+            "tool_count": len(tool_calls_made),
         },
-        "timestamp":        timestamp
+        "timestamp": timestamp,
     })
 
     SecurityBlock.intercept(
         "Executor", "Auditor",
-        {"execution_status": exec_output.get("status")},
-        state
+        {"execution_status": exec_output.get("status"), "tool_calls": len(tool_calls_made)},
+        state,
     )
-
     return state
