@@ -1,6 +1,6 @@
 """
-FinSecure LLM Service — Phase 1 Stabilized
-============================================
+FinSecure LLM Service — Phase 1 & Phase 2 Integrated
+=====================================================
 Properly distinguishes between:
   - CLIENT_NOT_INITIALIZED: API key missing or client failed to build
   - RATE_LIMIT: Groq returned 429 and all retries exhausted
@@ -10,19 +10,21 @@ Properly distinguishes between:
   - JSON_PARSE_ERROR: LLM responded but returned invalid JSON
 
 Features:
+  - Auto-loads GROQ_API_KEY & GROQ_MODEL dynamically from settings/.env
   - Request-scoped telemetry tracking (logical calls vs physical attempts, latency, model used)
   - Diagnostic capture of failed_generation on tool_use_failed
   - Robust JSON extraction stripping leading/trailing model commentary
   - Session-level caching of exhausted models to prevent redundant TPD retries
-  - Automatic fallback to llama-3.1-8b-instant if primary model hits daily quota
-  - Zero Phase 2 security controls (preserves all Phase 1 baseline vulnerabilities)
+  - Integrated with Phase 2 Zero-Trust Security Framework
 """
+import os
 import json
 import re
 import time
 import logging
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
+
 
 from groq import Groq
 from app.config import settings
@@ -176,22 +178,24 @@ class LLMService:
 
     MAX_RATE_LIMIT_RETRIES = 2
     BASE_RETRY_WAIT = 3.0
-    FALLBACK_MODEL = "openai/gpt-oss-20b"
 
     def __init__(self):
-        self.api_key = settings.GROQ_API_KEY
-        self.model   = settings.GROQ_MODEL
+        self.api_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
+        self.model   = settings.GROQ_MODEL or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        self.FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b")
         self.client  = None
         self._exhausted_models = set()
+        self._init_client()
 
-        if self.api_key:
+    def _init_client(self):
+        self.api_key = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
+        self.model = settings.GROQ_MODEL or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        if self.api_key and not self.client:
             logger.info(f"GROQ_API_KEY configured: true  |  model: {self.model}")
             try:
                 self.client = Groq(api_key=self.api_key)
             except Exception as e:
                 logger.error(f"[LLM] Failed to build Groq client: {e}")
-        else:
-            logger.error("[LLM] GROQ_API_KEY not set. LLM calls will fail with CLIENT_NOT_INITIALIZED.")
 
     # ------------------------------------------------------------------
     # Internal: single Groq request with bounded rate-limit retry & model fallback
@@ -204,6 +208,9 @@ class LLMService:
         logical_num = telemetry.start_logical_call()
 
         if not self.client:
+            self._init_client()
+
+        if not self.client:
             telemetry.record_attempt(method, agent, self.model, 1, LLMErrorType.CLIENT_NOT_INITIALIZED, 0.0, LLMErrorType.CLIENT_NOT_INITIALIZED)
             return None, LLMResult(
                 success=False,
@@ -213,6 +220,7 @@ class LLMService:
                 physical_attempts=1,
                 model_used=self.model
             )
+
 
         requested_model = groq_kwargs.get("model", self.model)
         models_to_try = []

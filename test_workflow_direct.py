@@ -38,9 +38,12 @@ print(f"Plan:           {final_state.get('plan')}")
 tools = [t["tool"] for t in final_state.get("tool_call_log", [])]
 print(f"Tools called:   {tools}")
 print(f"Audit status:   {final_state.get('audit_result', {}).get('audit_status')}")
-print(f"Audit summary:  {final_state.get('audit_result', {}).get('validation_summary')}")
+audit_sum = str(final_state.get('audit_result', {}).get('validation_summary', '')).encode("ascii", "ignore").decode()
+print(f"Audit summary:  {audit_sum}")
 print("\n--- FINAL REPORT ---")
-print(final_state.get("final_result", "")[:600])
+final_preview = (final_state.get("final_result", "") or "")[:600].encode("ascii", "ignore").decode()
+print(final_preview)
 
 from app.services.llm_service import get_total_llm_calls
 print(f"\nTotal LLM calls in this run: {get_total_llm_calls()}")
+

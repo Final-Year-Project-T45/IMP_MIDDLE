@@ -5,6 +5,12 @@ from app.models.loan import Loan
 from app.models.fraud_case import FraudCase
 from app.models.audit_event import AuditEvent
 from app.models.task_record import TaskRecord
+from app.models.security_models import (
+    AgentIdentity,
+    DelegationTokenRecord,
+    SecurityEventRecord,
+    ProvenanceNodeRecord,
+)
 
 __all__ = [
     "Customer",
@@ -14,4 +20,9 @@ __all__ = [
     "FraudCase",
     "AuditEvent",
     "TaskRecord",
+    "AgentIdentity",
+    "DelegationTokenRecord",
+    "SecurityEventRecord",
+    "ProvenanceNodeRecord",
 ]
+
