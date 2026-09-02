@@ -34,6 +34,24 @@ class BankingService:
         }
 
     @staticmethod
+    def get_customer(db: Session, customer_id: str) -> Dict[str, Any]:
+        cust = db.query(Customer).filter(Customer.customer_id == customer_id).first()
+        if not cust:
+            cust = db.query(Customer).filter(Customer.customer_id.endswith(customer_id)).first()
+        if not cust:
+            return {"status": "ERROR", "customer_id": customer_id, "message": f"Customer '{customer_id}' not found."}
+        return {
+            "status": "SUCCESS",
+            "customer_id": cust.customer_id,
+            "name": cust.name,
+            "email": cust.email,
+            "phone": cust.phone,
+            "kyc_status": cust.kyc_status,
+            "risk_level": cust.risk_level,
+            "created_at": cust.created_at.isoformat() if cust.created_at else None,
+        }
+
+    @staticmethod
     def get_balance(db: Session, account_id: str) -> Dict[str, Any]:
         res = BankingService.get_account(db, account_id)
         if res.get("status") == "ERROR":
@@ -78,12 +96,16 @@ class BankingService:
 
     @staticmethod
     def transfer_funds(db: Session, sender_account: str, receiver_account: str, amount: float, description: str = "Executor Agent Transfer") -> Dict[str, Any]:
-        # 1. Resolve Sender
+        # 1. Validate Amount
+        if amount is None or amount <= 0:
+            return {"status": "FAILED", "error": f"Invalid transfer amount: ₹{amount}. Transfer amount must be positive."}
+
+        # 2. Resolve Sender
         sender_res = BankingService.get_account(db, sender_account)
         if sender_res.get("status") == "ERROR":
             return {"status": "FAILED", "error": f"Sender account error: {sender_res.get('message')}"}
 
-        # 2. Resolve Receiver
+        # 3. Resolve Receiver
         receiver_res = BankingService.get_account(db, receiver_account)
         if receiver_res.get("status") == "ERROR":
             return {"status": "FAILED", "error": f"Receiver account error: {receiver_res.get('message')}"}
@@ -91,25 +113,35 @@ class BankingService:
         sender = db.query(Account).filter(Account.account_id == sender_res["account_id"]).first()
         receiver = db.query(Account).filter(Account.account_id == receiver_res["account_id"]).first()
 
-        # 3. Check Account Statuses
+        # 4. Check Same Sender / Receiver
+        if sender.account_id == receiver.account_id:
+            return {"status": "FAILED", "error": f"Sender and receiver accounts cannot be the same ({sender.account_id})."}
+
+        # 5. Check Account Statuses
         if sender.status != "ACTIVE":
             return {"status": "FAILED", "error": f"Sender account '{sender.account_id}' is {sender.status}. Transfer rejected."}
         if receiver.status != "ACTIVE":
             return {"status": "FAILED", "error": f"Receiver account '{receiver.account_id}' is {receiver.status}. Transfer rejected."}
 
-        # 4. Check Sufficient Balance
+        # 6. Check Sufficient Balance
         if sender.balance < amount:
             return {"status": "FAILED", "error": f"Insufficient funds. Sender balance is ₹{sender.balance:,.2f}, requested ₹{amount:,.2f}."}
 
-        # 5. Check Transfer Limit
+        # 7. Check Transfer Limit
         if amount > sender.daily_transfer_limit:
             return {"status": "FAILED", "error": f"Transfer amount ₹{amount:,.2f} exceeds daily limit ₹{sender.daily_transfer_limit:,.2f}."}
 
-        # 6. Execute Transaction inside DB Transaction block
+        # 8. Record Snapshot Balances for Invariant Verification
+        sender_before = sender.balance
+        receiver_before = receiver.balance
+
+        # 9. Execute Transaction inside DB Transaction block
         tx_id = f"TX-{uuid.uuid4().hex[:8].upper()}"
         try:
             sender.balance -= amount
             receiver.balance += amount
+            sender_after = sender.balance
+            receiver_after = receiver.balance
 
             tx = Transaction(
                 transaction_id=tx_id,
@@ -130,8 +162,10 @@ class BankingService:
                 "sender_account": sender.account_id,
                 "receiver_account": receiver.account_id,
                 "amount": amount,
-                "sender_new_balance": sender.balance,
-                "receiver_new_balance": receiver.balance,
+                "sender_before_balance": sender_before,
+                "receiver_before_balance": receiver_before,
+                "sender_new_balance": sender_after,
+                "receiver_new_balance": receiver_after,
                 "message": f"Successfully transferred ₹{amount:,.2f} from {sender.account_id} to {receiver.account_id}."
             }
         except Exception as e:
@@ -178,6 +212,15 @@ class BankingService:
 
         acc = db.query(Account).filter(Account.account_id == acc_res["account_id"]).first()
         prev_status = acc.status
+        if prev_status == "ACTIVE":
+            return {
+                "status": "SUCCESS",
+                "account_id": acc.account_id,
+                "previous_status": "ACTIVE",
+                "current_status": "ACTIVE",
+                "message": f"Account '{acc.account_id}' was already ACTIVE."
+            }
+
         try:
             acc.status = "ACTIVE"
             db.commit()

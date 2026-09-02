@@ -4,6 +4,14 @@ from app.models.fraud_case import FraudCase
 from app.models.customer import Customer
 from app.models.account import Account
 
+VALID_FRAUD_STATUSES = {"OPEN", "UNDER_INVESTIGATION", "RESOLVED", "CLOSED"}
+VALID_FRAUD_TRANSITIONS = {
+    "OPEN": {"UNDER_INVESTIGATION", "CLOSED"},
+    "UNDER_INVESTIGATION": {"RESOLVED", "CLOSED"},
+    "RESOLVED": {"CLOSED", "UNDER_INVESTIGATION"},
+    "CLOSED": {"UNDER_INVESTIGATION"}
+}
+
 class FraudService:
     @staticmethod
     def get_fraud_case(db: Session, case_id: str) -> Dict[str, Any]:
@@ -37,10 +45,38 @@ class FraudService:
     def update_fraud_case(db: Session, case_id: str, new_status: str, notes: str = "") -> Dict[str, Any]:
         res = FraudService.get_fraud_case(db, case_id)
         if res.get("status") == "ERROR":
-            return res
+            return {"status": "FAILED", "error": res.get("message")}
+
+        normalized_status = (new_status or "").strip().upper()
+        if normalized_status not in VALID_FRAUD_STATUSES:
+            return {
+                "status": "FAILED",
+                "error": f"Invalid fraud case status '{new_status}'. Allowed statuses: {sorted(list(VALID_FRAUD_STATUSES))}."
+            }
 
         fc = db.query(FraudCase).filter(FraudCase.case_id == res["case_id"]).first()
-        fc.status = new_status
+        current_status = fc.status
+
+        # If already in the target status, handle predictably
+        if normalized_status == current_status:
+            return {
+                "status": "SUCCESS",
+                "case_id": fc.case_id,
+                "previous_status": current_status,
+                "updated_status": current_status,
+                "message": f"Fraud case '{fc.case_id}' was already in status '{current_status}'."
+            }
+
+        # Check valid state transitions
+        allowed_transitions = VALID_FRAUD_TRANSITIONS.get(current_status, set())
+        if normalized_status not in allowed_transitions:
+            return {
+                "status": "FAILED",
+                "error": f"Invalid status transition from '{current_status}' to '{normalized_status}'. Allowed transitions: {sorted(list(allowed_transitions))}."
+            }
+
+        prev_status = fc.status
+        fc.status = normalized_status
         if notes:
             fc.description += f" [Updated: {notes}]"
 
@@ -49,8 +85,9 @@ class FraudService:
             return {
                 "status": "SUCCESS",
                 "case_id": fc.case_id,
+                "previous_status": prev_status,
                 "updated_status": fc.status,
-                "message": f"Fraud case '{fc.case_id}' status updated to {new_status}."
+                "message": f"Fraud case '{fc.case_id}' status updated from {prev_status} to {normalized_status}."
             }
         except Exception as e:
             db.rollback()

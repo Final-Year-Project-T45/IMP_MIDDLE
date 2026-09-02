@@ -15,12 +15,14 @@ class AgentState(TypedDict, total=False):
     status: str
     plan: List[str]
     context: Dict[str, Any]
+    researcher_summary: str
 
     # Retained for API compatibility with the existing frontend/backend.
     execution_request: Dict[str, Any]
     execution_output: Dict[str, Any]
     audit_result: Dict[str, Any]
     final_result: str
+    llm_telemetry: Dict[str, Any]
 
     errors: List[Any]
     timestamps: Dict[str, str]

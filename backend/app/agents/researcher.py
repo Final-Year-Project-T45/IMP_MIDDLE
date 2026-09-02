@@ -135,6 +135,7 @@ def researcher_node(state: AgentState) -> AgentState:
             }
             state["tool_call_log"].append(log_entry)
             tool_calls_made.append(log_entry)
+            context[tool_name] = tool_result
             context[f"{tool_name}_{len(tool_calls_made)}"] = tool_result
 
             messages.append({
@@ -163,6 +164,7 @@ def researcher_node(state: AgentState) -> AgentState:
     context["researcher_summary"] = summary
     context["research_rounds"] = rounds
     state["context"] = context
+    state["researcher_summary"] = summary
     state["status"] = "EXECUTING"
 
     state["agent_history"].append({

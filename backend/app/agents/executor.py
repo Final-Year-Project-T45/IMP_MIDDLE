@@ -189,7 +189,7 @@ def executor_node(state: AgentState) -> AgentState:
     if tool_calls_made:
         # Use the latest actual backend result as the execution status.
         # If multiple writes happened, expose the complete sequence while the
-        # top-level status reflects whether the latest operation succeeded.
+        # top-level status reflects whether all operations succeeded.
         latest = dict(last_tool_result or {})
         exec_output = latest
         exec_output["tool_called"] = tool_calls_made[-1]["tool"]
@@ -201,6 +201,9 @@ def executor_node(state: AgentState) -> AgentState:
             }
             for item in tool_calls_made
         ]
+        if any(item.get("result_status") in ("FAILED", "ERROR") for item in tool_calls_made):
+            exec_output["status"] = "FAILED"
+
         exec_output["executor_summary"] = final_summary or "Backend operation(s) completed; see execution result."
     else:
         exec_output = {
